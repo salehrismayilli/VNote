@@ -4,9 +4,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      ver: ${{ steps.chk.outputs.ver }}
     steps:
       - uses: actions/checkout@v4
       - name: Layihəni yoxla
+        id: chk
         run: |
           N=$(find . -name package.json -not -path "*/node_modules/*" | wc -l)
           if [ "$N" != "1" ]; then
@@ -18,6 +21,7 @@ jobs:
           echo "PROJ=$P" >> $GITHUB_ENV
           V=$(grep -o "VER='[0-9][0-9.]*'" "$P/www/index.html" | head -1 | grep -o "[0-9][0-9.]*")
           echo "VER=$V" >> $GITHUB_ENV
+          echo "ver=$V" >> $GITHUB_OUTPUT
           echo "VNote versiyasi: $V"
       - uses: actions/setup-node@v4
         with:
@@ -40,3 +44,59 @@ jobs:
         with:
           name: VNote-v${{ env.VER }}
           path: ${{ env.PROJ }}/android/app/build/outputs/apk/debug/app-debug.apk
+
+  web-tests:
+    # Avtomatik sınaq: düymələr, qeyd, to-do, zibil, şəkil, səs boru xətti. Uğursuz olsa APK yenə də hazırdır.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sınaq
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+          WWW=$(dirname "$(find . -path '*/www/index.html' -not -path '*/node_modules/*' | head -1)")
+          cd "$(dirname "$WWW")"
+          WWW="$(pwd)/www" python tests/smoke.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-screenshots
+          path: "**/tests/out/*.png"
+
+  emulator:
+    # Android emulyatorunda APK-nı açır, ekran görüntüsü və log yığır (səs və bildiriş yoxlanmır).
+    needs: build
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: VNote-v${{ needs.build.outputs.ver }}
+      - name: KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          script: |
+            adb install -r app-debug.apk
+            adb shell am start -n com.vnote.app/.MainActivity
+            sleep 25
+            adb exec-out screencap -p > emulator-home.png
+            adb logcat -d > emulator-logcat.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulator-report
+          path: |
+            emulator-home.png
+            emulator-logcat.txt
