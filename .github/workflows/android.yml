@@ -19,6 +19,7 @@ jobs:
           fi
           P=$(dirname "$(find . -name package.json -not -path "*/node_modules/*")")
           echo "PROJ=$P" >> $GITHUB_ENV
+          sed -i "s/const VER='\([0-9][0-9.]*\)'/const VER='\1.${{ github.run_number }}'/" "$P/www/index.html"
           V=$(grep -o "VER='[0-9][0-9.]*'" "$P/www/index.html" | head -1 | grep -o "[0-9][0-9.]*")
           echo "VER=$V" >> $GITHUB_ENV
           echo "ver=$V" >> $GITHUB_OUTPUT
@@ -40,14 +41,17 @@ jobs:
         working-directory: ${{ env.PROJ }}
       - run: chmod +x gradlew && ./gradlew assembleDebug
         working-directory: ${{ env.PROJ }}/android
+      - name: APK-nı adlandır
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk "VNote-v${VER}.apk"
+        working-directory: ${{ env.PROJ }}
       - uses: actions/upload-artifact@v4
         with:
           name: VNote-v${{ env.VER }}
-          path: ${{ env.PROJ }}/android/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ env.PROJ }}/VNote-v${{ env.VER }}.apk
 
   web-tests:
     # Avtomatik sınaq: düymələr, qeyd, to-do, zibil, şəkil, səs boru xətti. Uğursuz olsa APK yenə də hazırdır.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -56,16 +60,25 @@ jobs:
           python-version: "3.12"
       - name: Sınaq
         run: |
+          set -o pipefail
           pip install playwright
           python -m playwright install --with-deps chromium
-          WWW=$(dirname "$(find . -path '*/www/index.html' -not -path '*/node_modules/*' | head -1)")
-          cd "$(dirname "$WWW")"
-          WWW="$(pwd)/www" python tests/smoke.py
+          IDX=$(find . -path '*/www/index.html' -not -path '*/node_modules/*' | head -1)
+          ROOT=$(dirname "$(dirname "$IDX")")
+          cd "$ROOT"
+          mkdir -p tests/out
+          WWW="$(pwd)/www" CI=1 python tests/smoke.py 2>&1 | tee tests/out/test-log.txt
+      - name: Xülasə
+        if: always()
+        run: |
+          F=$(find . -name test-log.txt -not -path '*/node_modules/*' | head -1)
+          [ -n "$F" ] || exit 0
+          { echo "### VNote sınaq nəticəsi"; echo '```'; grep -E "PASS|FAIL|Error|Traceback" "$F" | head -60; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-screenshots
-          path: "**/tests/out/*.png"
+          name: test-report
+          path: "**/tests/out/*"
 
   emulator:
     # Android emulyatorunda APK-nı açır, ekran görüntüsü və log yığır (səs və bildiriş yoxlanmır).
@@ -88,7 +101,7 @@ jobs:
           arch: x86_64
           target: google_apis
           script: |
-            adb install -r app-debug.apk
+            adb install -r VNote-v*.apk
             adb shell am start -n com.vnote.app/.MainActivity
             sleep 25
             adb exec-out screencap -p > emulator-home.png
